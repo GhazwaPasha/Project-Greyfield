@@ -43,3 +43,8 @@ Thumbs.db
 
 # Local-only override configs (per-machine editor settings, not shared)
 Saved/Config/
+
+# Raw pre-import 3D source assets (GLB/FBX/USDZ downloads, staged for UE import).
+# Large binaries, not authoritative once imported into Content/ as .uasset — don't
+# bloat the repo with them, keep them local only.
+RawAssets/

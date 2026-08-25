@@ -51,6 +51,14 @@ art yet.
 - **[Supply Manifest](https://claude.ai/code/artifact/ce37d842-6fbc-41bb-8233-fef749b66dd7)**
   — free asset sourcing plan (models/textures/music/SFX/voice/UI), all CC0-or-compatible.
   **User is sourcing assets themselves** — this is reference only, not a task queue for me.
+  **Quality-bar decision, 2026-08-24**: mid-poly "sim-style" sourcing (Sketchfab/CGTrader/
+  itch.io, filtered CC0/CC-BY) is now the default for units/vehicles/weapons, not the
+  original flat-shaded Kenney/Quaternius low-poly bar — Greyfield is a Zero Hour successor
+  and needs a grounded-realistic register, not a mobile-game one. Kenney/Quaternius drop to
+  a fallback tier (props, UI, low-priority fill). Poly budget still matters against Phase
+  2's Mass Entity LOD ceiling — vet each mid-poly find against that before committing it to
+  a unit slot. Textures follow the same shift: ambientCG/Poly Haven PBR is now primary,
+  Kenney's flat texture sets are fallback-only.
 - **[Faction Roster](https://claude.ai/code/artifact/bcabf1c0-538d-46b4-a07d-818c54125b3b)**
   — military/economy asset shopping list per faction (superseded in priority by "user
   sources it themselves," but the unit list itself is still the design reference).
@@ -117,13 +125,56 @@ not blocking anything.
 - **`CaptureViewport` returns an image unrelated to the actual PIE session** — don't trust
   it for visual verification; use `GetLogEntries` + `find_actors`/`get_properties` on live
   PIE actors instead.
-- No Blender/3D-authoring MCP is set up — user said to forget that direction, they're
-  sourcing assets manually.
+- **Blender MCP is now set up and used** (superseding the earlier "no Blender MCP" note) —
+  needed because raw glTF/GLB imports of multi-material source files fragment into dozens
+  of disconnected per-material StaticMeshes in Unreal (Interchange's Python-side
+  `combine_static_meshes_behavior` pipeline option does not actually apply via
+  `AssetImportTask.options`, confirmed by testing — don't rely on it). Fix: run each GLB
+  through Blender headless first (`blender.exe --background --python <script>`, see
+  `RawAssets/merge_meshes.py`) to join same-file mesh parts into one mesh (materials kept as
+  slots), *only* for unrigged (no-armature) meshes — skip the join for skinned/rigged source
+  files, since merging across skeletons is unsafe. Confirmed working: F-22 82→1 mesh, F-35B
+  148→1, etc. `execute_blender_code_for_cli`'s `BLENDER_PATH` env var isn't set in this
+  environment — invoke `blender.exe` directly via Bash/PowerShell instead (path:
+  `C:\Program Files\Blender Foundation\Blender 5.2\blender.exe`).
 - **Save everything before every rebuild, every time** (user's explicit standing
   instruction, 2026-08-24) — not just when convenient. `DataAssetTools.create` only creates
   an asset in memory; nothing persists until `AssetTools.save_assets` is called. Got bitten
   once: a freshly-created `UMassEntityConfigAsset` vanished entirely after an editor-restart
   rebuild because it was never saved.
+- **Raw pre-import 3D assets live in `RawAssets/`** (project root, sibling to `Content/`),
+  gitignored — not `Content/`, which is reserved for UE's own `.uasset` packages, and not a
+  loose `Assets/` folder at root (that was the original drop location, normalized 2026-08-24).
+  Organized `RawAssets/Units/<Role>/<Faction>/`, matching the Order of Battle's role
+  taxonomy (Infantry, Aircraft, etc.) and the 4-faction roster — e.g.
+  `RawAssets/Units/Aircraft/RedDragon/j-20.glb`. Filenames normalized to lowercase-kebab,
+  no spaces, no site-cruft suffixes (`_3d_model`, `_-_free`, etc.) — this is a manual step
+  each time a new batch of downloads lands, not automated. First batch: 16 GLB files (12
+  aircraft — 5 United Alliance real-world F-15/16/22/35/B-2 analogues, 6 Red Dragon
+  Chengdu/Shenyang/Xian analogues, 1 Crescent Coalition KAAN — plus 4 infantry, one per
+  faction except GLF's currently-unfilled aircraft slot, consistent with GLF having no
+  advanced-airframe doctrine per the Order of Battle). **Update 2026-08-25: imported into
+  `Content/Units/<Role>/<Faction>/` and visually confirmed in a real PIE run** (F-22 and
+  J-20 placed near the HQ, infantry placed too — F-22 later swapped for a replacement
+  model the user supplied since the first had misplaced parts). Import is now scripted, not
+  manual drag-drop: `unreal-mcp` isn't reachable from a fresh Claude session until the
+  editor is already running (project `.mcp.json` server connects at session start only), so
+  the pipeline is headless instead — `PythonScriptPlugin` + `EditorScriptingUtilities` are
+  now enabled in `ProjectGreyfield.uproject` for this, and
+  `UnrealEditor-Cmd.exe <uproject> -ExecutePythonScript="<script>" -unattended -nullrhi
+  -stdout -FullStdOutLogOutput` runs an import script (`RawAssets/import_units.py`) without
+  ever opening the GUI. `-nullrhi` avoids a real GPU crash dump hit once on a plain headless
+  run. Infantry SkeletalMeshes imported clean (no fragmentation) directly from source;
+  aircraft need the Blender pre-merge step above first. Still open: none of these are wired
+  into the actual faction/unit gameplay classes yet (Order of Battle DataTable rows,
+  placeholder-mesh swap-out) — this batch only proves the import+render pipeline works.
+  **Also 2026-08-25: user said "stop using computer connecter" (windows-mcp click/drag GUI
+  automation)** — it kept misfiring during this session (text typed into the wrong window,
+  clicks landing on the wrong actor, a Claude desktop-app window showing this same
+  conversation repeatedly stealing focus). Manual in-editor placement/drag-and-drop steps
+  are now handed to the user with precise instructions instead of driven by Claude; scripted
+  headless work and `windows-mcp Process`/`PowerShell` for the editor process lifecycle are
+  still fine. See [[computer-use-preference]] memory for the full detail.
 - **This level uses World Partition** — placed actors live in their own external-actor
   packages, not inside the `.umap` itself, so `AssetTools.is_dirty("/Game/Maps/NewMap")` can
   read `false` right after placing a brand-new actor (the actor's own package is what's
