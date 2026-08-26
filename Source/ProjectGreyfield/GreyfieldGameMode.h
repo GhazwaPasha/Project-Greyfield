@@ -24,17 +24,20 @@ public:
 
 protected:
 	virtual void InitGame(const FString& MapName, const FString& Options, FString& ErrorMessage) override;
+	virtual void StartPlay() override;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Greyfield|Match")
 	bool bMatchOver = false;
 
 	// Off by default so the existing hand-built NewMap level is untouched -
 	// AGreyfieldGameMode_Procedural turns this on for procedurally-generated levels.
-	// GenerateMap runs from InitGame (before any player login/spawn), which is what actually
-	// fixes the spawn-ordering race the old dev-trigger-actor approach had: FindPlayerStart used
-	// to run before the trigger's BeginPlay had generated any PlayerStart, so the pawn fell back
-	// to spawning at world origin - which can land it embedded inside solid landscape geometry
-	// if the terrain there happens to be elevated (black screen, confirmed 2026-08-25).
+	// GenerateMap runs from StartPlay (2026-08-26, moved from InitGame - see .cpp comment for why),
+	// which still fixes the original spawn-ordering race the old dev-trigger-actor approach had:
+	// FindPlayerStart used to run before the trigger's BeginPlay had generated any PlayerStart, so
+	// the pawn fell back to spawning at world origin - which can land it embedded inside solid
+	// landscape geometry if the terrain there happens to be elevated (black screen, confirmed
+	// 2026-08-25). StartPlay still runs generation before Super::StartPlay() triggers player
+	// login/FindPlayerStart, so that fix still holds.
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Greyfield|MapGen")
 	bool bGenerateProceduralMap = false;
 
