@@ -46,8 +46,12 @@ Saved/Config/
 
 # Raw pre-import 3D source assets (GLB/FBX/USDZ downloads, staged for UE import).
 # Large binaries, not authoritative once imported into Content/ as .uasset — don't
-# bloat the repo with them, keep them local only.
-RawAssets/
+# bloat the repo with them, keep them local only. Exception (2026-08-26): the *.py
+# pipeline/authoring/diagnostic scripts that live alongside them are small, real
+# source code (map generation, import/merge pipelines, headless inspection) — track
+# those, keep only the binaries/subfolders (Units/, Audio/, import logs) local-only.
+RawAssets/*
+!RawAssets/*.py
 
 # Solo project, GitHub used for source code only (2026-08-25 decision) — all Unreal
 # content (.uasset/.umap: meshes, textures, materials, levels) stays local. A prior
