@@ -387,16 +387,41 @@ open question:**
   all, so may be specific to real-RHI + `-unattended` + `-ExecutePythonScript` together — untested
   whether it's `-unattended` specifically). Not chased further this session; flagging in case it
   recurs or turns out to matter for future headless real-rendering verification attempts.
-- **Next concrete step, in order**: (1) user presses Play on `Map_Small2v2` in the real editor,
-  waits past the first ~10s warmup stall, and reports whether Lit mode is still black — the
-  PostProcessVolume fix above may have already resolved it. (2) If still black, check the
-  viewport's **Lumen visualization view mode** (View Mode → Lumen → "Surface Cache" or "Final
-  Gather") — this directly shows whether the landscape has a valid Lumen scene representation, a
-  much sharper test than eyeballing Lit vs Unlit, and would confirm or rule out the
-  runtime-Import()-registration theory despite the positive RT-scene signal above (the ray tracing
-  scene and the Lumen surface cache are registered separately, so one being fine doesn't guarantee
-  the other is). (3) `r.DynamicGlobalIlluminationMethod=0` (Lumen off) as a diagnostic if (2) is
-  inconclusive.
+- **PostProcessVolume fix confirmed NOT the (sole) cause — user tested it same session**: Lit mode
+  still solid black after the PPV fix above. Crucially, the user also reported **"Lighting Only"
+  view mode is black too**, not just Lit. This is a much sharper signal than Lit-vs-Unlit alone:
+  Lighting Only shows the raw light contribution with material/albedo stripped out and, like
+  Unlit, bypasses tonemapping/exposure compensation — if it reads as black, the surface is
+  receiving essentially no *perceptible* light, full stop, independent of any
+  exposure/tonemap/PostProcessVolume question (which this observation makes moot as a cause,
+  though the PPV added above is still worth keeping as standing insurance).
+- **Root cause #4 found (high confidence), fix applied, not yet re-tested**: `create_map_small2v2.py`
+  set the Sun's `DirectionalLightComponent.intensity` to `6.0`, copied from `NewMap`'s own working
+  value on the assumption that matching a known-good number would carry over safely. It doesn't —
+  UE5 `DirectionalLight` intensity is physical **Lux**: real daylight runs roughly 1,000–10,000 lux
+  (overcast) up to ~100,000 lux (direct sun), so 6.0 is deep-twilight level, functionally
+  imperceptible without heavy exposure compensation. That exactly explains the symptom pattern:
+  Unlit ignores light entirely so it looks fine; Lit's auto-exposure tries to compensate but
+  apparently can't pull a signal that dim up to visible; Lighting Only has zero exposure
+  compensation and shows the true (near-zero) light level directly, i.e. black. `NewMap`'s simple
+  placeholder-box scene apparently reads as acceptable at the same 6.0 lux (smaller/closer geometry,
+  different overall scene response) even though the value itself was always this dim — this was
+  never actually a landscape-specific or Lumen-specific bug, just an unphysical light value that
+  happened to be tolerable for one scene and not the other. **Fix applied**: bumped intensity to
+  `80000.0` (physically-plausible direct-daylight range, matching the level Epic's own
+  SkyAtmosphere-paired sample levels use), left `SkyLight` untouched (real-time-capture, scales
+  with the actual scene automatically). Rebuilt and headless-verified the script ran clean
+  (`save_map returned: True`). **Not yet visually re-confirmed** — needs the same real
+  Play-in-editor check as before.
+- **Next concrete step, in order**: (1) user presses Play on `Map_Small2v2` again and reports
+  whether Lit/Lighting-Only are still black — this is the most likely actual fix of the four things
+  tried across this bug (mobility, material, PostProcessVolume, now light intensity). (2) If still
+  black, check the viewport's **Lumen visualization view mode** (View Mode → Lumen → "Surface
+  Cache" or "Final Gather") — this directly shows whether the landscape has a valid Lumen scene
+  representation, and would confirm or rule out the runtime-Import()-registration theory despite
+  the positive RT-scene signal noted above (the ray tracing scene and the Lumen surface cache are
+  registered separately, so one being fine doesn't guarantee the other is). (3)
+  `r.DynamicGlobalIlluminationMethod=0` (Lumen off) as a diagnostic if (2) is inconclusive.
 
 **Verified 2026-08-25**: `unreal-mcp` was not reachable this session (editor wasn't running yet
 when the session started — matches the documented "connects at session start only" gotcha), so

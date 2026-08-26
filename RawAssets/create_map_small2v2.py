@@ -24,12 +24,11 @@ unreal.EditorLoadingAndSavingUtils.new_blank_map(False)
 print("Created blank in-memory level, will Save As", MAP_PATH, "at the end")
 
 # --- Lighting so the generated landscape is actually visible in PIE ---
-# Values/mobility matched exactly to NewMap's own working setup (2026-08-25 fix): this project
-# runs r.AllowStaticLighting=False (fully dynamic lighting only, confirmed in DefaultEngine.ini),
-# but spawn_actor_from_class defaults these to Stationary mobility - which can't render at all
-# with static lighting disabled project-wide. That mismatch, not light intensity, was the actual
-# cause of a black screen the user hit (both in PIE and the bare edit-time viewport). Every
-# lighting/sky actor in NewMap is explicitly Movable - matching that here.
+# Mobility matched to NewMap's own working setup (2026-08-25 fix): this project runs
+# r.AllowStaticLighting=False (fully dynamic lighting only, confirmed in DefaultEngine.ini), but
+# spawn_actor_from_class defaults these to Stationary mobility - which can't render at all with
+# static lighting disabled project-wide. Every lighting/sky actor in NewMap is explicitly Movable
+# - matching that here.
 MOVABLE = unreal.ComponentMobility.MOVABLE
 
 directional_light = actor_subsys.spawn_actor_from_class(
@@ -39,7 +38,15 @@ directional_light.set_actor_label("Sun")
 light_comp = directional_light.get_component_by_class(unreal.DirectionalLightComponent)
 if light_comp:
     light_comp.set_editor_property("mobility", MOVABLE)
-    light_comp.set_editor_property("intensity", 6.0)  # matches NewMap's DirectionalLight
+    # 2026-08-26: WAS 6.0, copied from NewMap on the assumption "matches the known-working
+    # level" would carry over safely. It didn't - UE5 DirectionalLight intensity is physical Lux
+    # (real daylight is ~1,000-10,000 lux overcast, ~100,000 lux direct sun; 6.0 is deep-twilight
+    # level, functionally imperceptible without heavy exposure compensation). NewMap's simple
+    # placeholder-box scene apparently reads as acceptable at 6.0; this landscape, under real
+    # PBR-ish material response and Lighting-Only view mode (which has zero exposure
+    # compensation - it showed solid black too, not just Lit), evidently doesn't. 80000 matches
+    # the physically-plausible daylight range Epic's own SkyAtmosphere-paired sample levels use.
+    light_comp.set_editor_property("intensity", 80000.0)
     light_comp.set_editor_property("atmosphere_sun_light", True)
 
 sky_light = actor_subsys.spawn_actor_from_class(unreal.SkyLight, unreal.Vector(0, 0, 2000), unreal.Rotator(0, 0, 0))
