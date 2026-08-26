@@ -138,6 +138,137 @@ not blocking anything.
   level actors (HQ, resource nodes, etc.) do. Don't trust it for verifying anything that only
   exists at PIE runtime — use `GetLogEntries` instead.
 
+## Procedural map generation (started 2026-08-25)
+
+**Design decision, 2026-08-25**: every Greyfield map is generated fresh per match (AoE4-style),
+not hand-crafted like the existing `NewMap` level. Four size tiers, each 2x the components of
+the last: **Small (2v2, 4 players)**, **Medium (3v3, 6 players)**, **Large (4v4, 8 players)**,
+**Gigantic** (8 players placeholder, same as Large — whether Gigantic should mean *more* players
+too is an open, undecided question). Small is the only tier actually generated and PIE-verified
+so far; Medium/Large/Gigantic share the exact same code path via `GetPresetForSize` and are
+believed to work, just unrun.
+
+**What exists** (`Source/ProjectGreyfield/`): `GreyfieldMapGenerationTypes.h` (the
+`EGreyfieldMapSize` enum + preset/spawn structs), `GreyfieldMapGenerationSubsystem.h/.cpp` (the
+actual generator, a `UWorldSubsystem`), `GreyfieldMapGenTestTrigger.h/.cpp` (DEV/TEST ONLY
+placeable actor that calls `GenerateMap` on `BeginPlay`, same role as
+`AGreyfieldMassSquadTestTrigger` for Phase 2). `Landscape` added to `ProjectGreyfield.Build.cs`.
+
+Algorithm: layered Perlin (`FMath::PerlinNoise2D`, 5-octave fBm) heightmap, sign-preserving power
+curve biasing most of the map toward buildable plains with rolling ~30m hills, buildable pads
+flattened under every spawn. Player spawns sit on a ring split into two 180-degree arcs (one per
+team) so the two teams are always an exact point-reflection of each other; the heightmap is only
+computed for the "top" half and mirrored into the bottom half, so the two teams' terrain is
+provably fair by construction, not just statistically similar. Landscape built via
+`ALandscapeProxy::Import()` (the same call the editor's own New Landscape panel uses, traced
+through `LandscapeEditorDetailCustomization_NewLandscape.cpp` to get the exact call pattern:
+`SpawnActor<ALandscape>` → set `LandscapeMaterial` → `SetActorRelativeScale3D` → `Import(...)` →
+`GetLandscapeInfo()`), with `MTL_MWAM_AutoMaterial_MASTER` (the MW Landscape Auto Material plugin,
+already in `Content/MWLandscapeAutoMaterial/`) assigned as the landscape material — no manual
+paint layers needed, it blends purely from slope/height. Resolution presets are Unreal's own
+standard values (63 quads/section, 1 section/component): Small=1009 verts/side (16
+components, ~1008x1008m at the project's 1uu=1cm convention), Medium=2017, Large=4033,
+Gigantic=8065.
+
+**KNOWN GAP — packaging**: `GenerateMap` is `WITH_EDITOR`-gated.
+`ALandscapeProxy::Import()` lives entirely inside Landscape's own `WITH_EDITOR` block in the
+engine source (confirmed by reading `LandscapeProxy.h`/`LandscapeEdit.cpp` directly) — it's
+compiled out of Shipping/packaged builds entirely, not just disabled. Worse than a compile-time
+gap: it also asserts `GIsEditor || IsRunningCommandlet()` at runtime, confirmed the hard way — an
+attempt to test it via `-game` (standalone) mode from the Editor binary crashed with exactly that
+assertion inside `Landscape.dll`'s material-instance setup, even though `-game` still compiles
+with `WITH_EDITOR=1`. It works from genuine Editor context only (including real PIE, since
+`GIsEditor` stays true for the whole editor process during PIE) — this project currently only
+ever ships through PIE, so this isn't blocking today, but packaging will need this ported to a
+runtime-safe terrain representation (e.g. a `ProceduralMeshComponent` heightfield) or a
+pre-bake-per-seed step. Not started.
+
+**FIXED same day — player-spawn timing / black screen**: the dev-trigger-actor approach above had
+a real bug, not just a cosmetic gap. `AGreyfieldGameMode`'s own initial `FindPlayerStart` call ran
+*before* the dev trigger's `BeginPlay` had generated any `APlayerStart` actors (confirmed via log:
+`FindPlayerStart: PATHS NOT DEFINED or NO PLAYERSTART with positive rating`, before the
+`GreyfieldMapGen:` success line) — so the camera pawn fell back to spawning at world origin. The
+user hit this for real: pressed Play on `Map_Small2v2` and got a black screen. Root cause,
+confirmed by reading `GreyfieldRTSCameraPawn`'s spring arm math: world origin isn't guaranteed to
+sit near the generated terrain's height (the noise field there could be anywhere in the -6m..+30m
+range), so the camera — ~17m above its pawn's spawn point at a -60° pitch — ended up embedded
+inside solid landscape geometry, rendering pure black no matter how long you waited.
+
+**Fix**: moved map generation out of the dev trigger's `BeginPlay` entirely and into
+`AGreyfieldGameMode::InitGame()` (gated behind a new `bGenerateProceduralMap` bool, default
+`false`), which runs before any player login/spawn — structurally impossible to race now. Added
+`AGreyfieldGameMode_Procedural` (trivial subclass, just flips that bool on) as `Map_Small2v2`'s
+World Settings GameMode Override, so `NewMap` (still on the base `AGreyfieldGameMode`) is
+untouched. `AGreyfieldMapGenTestTrigger` is no longer placed in the level (the class itself is
+still there, harmless, for future ad hoc tests) — `RawAssets/create_map_small2v2.py` was updated
+and rerun to rebuild the level without it. Also dropped the level's `NavMeshBoundsVolume`: it had
+no real geometry to build against at edit time (the landscape doesn't exist until runtime), so it
+only produced an editor "needs rebuild" nag with zero benefit — real runtime nav mesh rebuilding
+for generated terrain is real future work (rebuild after `GenerateMap` completes, once
+units/pathfinding are actually being tested on generated maps), not done here.
+
+Re-verified the same way (headless PIE via `LevelEditorSubsystem.editor_request_begin_play()`):
+log now shows `Game class is 'GreyfieldGameMode_Procedural'` → `Greyfield MapGen: generated...`
+→ `Match State Changed... InProgress` → `PIE: Server logged in`, with **no**
+`FindPlayerStart: PATHS NOT DEFINED` warning anywhere in the log — the ordering fix holds.
+Not independently re-confirmed with real rendering (verification is still `-nullrhi`, no visual
+check) — next actual Play in the editor by the user is the real confirmation.
+
+**Separate, expected, NOT a bug**: the very first PIE run against `Map_Small2v2` in a session can
+show a black/incomplete screen for several seconds while the MW Auto Material's large 4K textures
+and landscape shaders compile live (`FLandscapePhysicalMaterialPS`, `FLumenCardCS`, etc. — logged
+compile times up to ~10s total the first time). This is normal first-compile stall, not the bug
+above, and gets faster on repeat plays once local DDC is warm (already true after this session's
+verification runs).
+
+**FIXED same day — the actual persistent black screen, root cause #3**: after the two fixes above,
+the user still saw solid black, but now with everything else working (HUD, resource counter,
+mouse-click building placement, minimap all functioning correctly — strong evidence the landscape
+collision and world geometry were genuinely fine). Asked them to switch the viewport to **Unlit**
+to isolate lighting from geometry/material — it showed the terrain in full 3D detail, but every
+inch of it tiled with the literal text **"ADD COLOR TEXTURE TO MATERIAL"**. That's
+`MTL_MWAM_AutoMaterial_MASTER`'s own built-in missing-texture placeholder: the master material is
+a *template* meant to be turned into a Material Instance with real textures plugged into its
+parameters, not applied directly to a landscape — which is exactly what `GenerateMap` was doing.
+Its default parameter values are the plugin's intentional "you forgot to assign a texture" debug
+texture, which reads as literally black once real lighting is applied on top (the debug texture is
+a light gray/white text-on-gray pattern, not actually just black - the "black" the user was
+consistently seeing turned out to be that placeholder rendered dark by the lighting fixes still in
+flight, all stacking into what looked like one uniform failure).
+
+**Fix**: point `LandscapeMaterial` at one of the plugin's three ready-made Material Instances (real
+textures already wired) instead of the bare master — `MTL_MWAM_Landscape_MountainRangeExample`,
+picked as the best fit for this generator's rolling-hills output. Rebuilt, headless-verified no
+"could not load MW Auto Material" warning. **Not yet done**: a dedicated Greyfield-specific
+Material Instance with its own tuned parameters (not tied to the plugin's own demo map) — using
+one of the "Example" instances as-is is a correct-but-borrowed placeholder, good enough to prove
+the pipeline, not final art direction.
+
+This was genuinely three stacked, independent bugs surfacing as one "black screen" symptom across
+this session: (1) spawn-ordering race → camera could embed in geometry, (2) Stationary mobility on
+manually-spawned lights in a fully-dynamic-lighting project → no light rendered at all, (3) the
+landscape material being the unconfigured master template → the plugin's own placeholder texture.
+All three are fixed now; still awaiting the user's next real-rendered confirmation.
+
+**Verified 2026-08-25**: `unreal-mcp` was not reachable this session (editor wasn't running yet
+when the session started — matches the documented "connects at session start only" gotcha), so
+verification went through the same headless-Python pattern as asset import, extended one step
+further: `UnrealEditor-Cmd.exe <uproject> -ExecutePythonScript=<script> -unattended -nullrhi`
+where the script itself calls `unreal.get_editor_subsystem(unreal.LevelEditorSubsystem)`,
+`.load_level(...)`, then `.editor_request_begin_play()` — the exact API the editor's own Play
+button calls, so `GIsEditor` stays true and the run is a genuine PIE session, all headless with no
+GUI click needed. Real PIE log confirms clean success: *"Greyfield MapGen: generated
+EGreyfieldMapSize::Small2v2 map, seed=6107, 1009x1009 verts, 1008x1008m, 4 player starts"* — no
+crash, no material-load warning (MW Auto Material loaded fine). A new level,
+`/Game/Maps/Map_Small2v2`, was created headlessly for this (`RawAssets/create_map_small2v2.py`)
+with lighting, a nav mesh bounds volume, `AGreyfieldGameMode` set as World Settings' GameMode
+Override, and one `AGreyfieldMapGenTestTrigger` (Small2v2, seed 0 = random every run) placed —
+`NewMap` (the real hand-built vertical-slice level) was left untouched. Not yet done: an actual
+visual look at the generated terrain/material blend — `-nullrhi` means nothing rendered this run,
+and PIE-only content doesn't show up in `CaptureViewport` per the existing documented limitation.
+The user can see it for real by opening the editor on `Map_Small2v2` and pressing Play (a fresh
+terrain generates every time, by design).
+
 ## What's next
 
 Following the **original phase order** (user explicitly said to stick to this, not the

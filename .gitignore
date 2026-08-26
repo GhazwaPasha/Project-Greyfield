@@ -43,3 +43,15 @@ Thumbs.db
 
 # Local-only override configs (per-machine editor settings, not shared)
 Saved/Config/
+
+# Raw pre-import 3D source assets (GLB/FBX/USDZ downloads, staged for UE import).
+# Large binaries, not authoritative once imported into Content/ as .uasset — don't
+# bloat the repo with them, keep them local only.
+RawAssets/
+
+# Solo project, GitHub used for source code only (2026-08-25 decision) — all Unreal
+# content (.uasset/.umap: meshes, textures, materials, levels) stays local. A prior
+# asset-import commit already blew the repo past 800MB and started timing out on
+# push; not repeating that. Content/ itself is required for the project to open —
+# back it up some other way (not git).
+Content/
