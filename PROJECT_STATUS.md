@@ -272,34 +272,50 @@ compile times up to ~10s total the first time). This is normal first-compile sta
 above, and gets faster on repeat plays once local DDC is warm (already true after this session's
 verification runs).
 
-**FIXED same day — the actual persistent black screen, root cause #3**: after the two fixes above,
-the user still saw solid black, but now with everything else working (HUD, resource counter,
-mouse-click building placement, minimap all functioning correctly — strong evidence the landscape
-collision and world geometry were genuinely fine). Asked them to switch the viewport to **Unlit**
-to isolate lighting from geometry/material — it showed the terrain in full 3D detail, but every
-inch of it tiled with the literal text **"ADD COLOR TEXTURE TO MATERIAL"**. That's
+**FIXED — root cause #2, light mobility**: the user still saw solid black (both in PIE and the
+bare edit-time viewport, before any landscape even existed), with everything gameplay-side working
+(HUD, resource counter, mouse-click building placement, minimap — strong evidence world geometry
+and collision were genuinely fine). Inspected `NewMap`'s own lighting actors for comparison
+(headless Python, `LevelEditorSubsystem`) and found the mismatch: this project runs
+`r.AllowStaticLighting=False` (fully dynamic lighting, confirmed in `DefaultEngine.ini`), but
+`spawn_actor_from_class` defaults `DirectionalLight`/`SkyLight`/`SkyAtmosphere` to **Stationary**
+mobility — which can't render at all with static lighting disabled project-wide. `NewMap`'s own
+lights are Movable. **Fix applied**: `RawAssets/create_map_small2v2.py` now explicitly sets
+`mobility = MOVABLE` on every lighting/sky actor (Sun, SkyLight, SkyAtmosphere, and an added
+`ExponentialHeightFog` — `NewMap` has one, the level didn't), and matches `NewMap`'s exact light
+values (`DirectionalLight` intensity 6.0, `SkyLight` intensity 1.0 + real-time capture). Rebuilt
+and re-tested — **this did not fully fix it**: Lit mode was still black afterward. Confirmed
+applied and ruled out as the *sole* cause, not confirmed as a contributing one either — genuinely
+unresolved whether it mattered at all.
+
+**FIXED — root cause #3, wrong material asset**: with mobility/geometry/collision all seemingly
+fine and Lit still black, asked the user to switch the viewport to **Unlit** to isolate
+lighting from geometry/material — it showed the terrain in full 3D detail, but every inch of it
+tiled with the literal text **"ADD COLOR TEXTURE TO MATERIAL"**. That's
 `MTL_MWAM_AutoMaterial_MASTER`'s own built-in missing-texture placeholder: the master material is
 a *template* meant to be turned into a Material Instance with real textures plugged into its
 parameters, not applied directly to a landscape — which is exactly what `GenerateMap` was doing.
-Its default parameter values are the plugin's intentional "you forgot to assign a texture" debug
-texture, which reads as literally black once real lighting is applied on top (the debug texture is
-a light gray/white text-on-gray pattern, not actually just black - the "black" the user was
-consistently seeing turned out to be that placeholder rendered dark by the lighting fixes still in
-flight, all stacking into what looked like one uniform failure).
+**Fix**: point `LandscapeMaterial` at one of the plugin's three ready-made Material Instances
+instead of the bare master — `MTL_MWAM_Landscape_MountainRangeExample`, picked as the best fit for
+this generator's rolling-hills output. Rebuilt; re-checked Unlit and it now shows real snow/rock
+texture detail, no more placeholder. **Not yet done**: a dedicated Greyfield-specific Material
+Instance with its own tuned parameters (not tied to the plugin's own demo map).
 
-**Fix**: point `LandscapeMaterial` at one of the plugin's three ready-made Material Instances (real
-textures already wired) instead of the bare master — `MTL_MWAM_Landscape_MountainRangeExample`,
-picked as the best fit for this generator's rolling-hills output. Rebuilt, headless-verified no
-"could not load MW Auto Material" warning. **Not yet done**: a dedicated Greyfield-specific
-Material Instance with its own tuned parameters (not tied to the plugin's own demo map) — using
-one of the "Example" instances as-is is a correct-but-borrowed placeholder, good enough to prove
-the pipeline, not final art direction.
-
-This was genuinely three stacked, independent bugs surfacing as one "black screen" symptom across
-this session: (1) spawn-ordering race → camera could embed in geometry, (2) Stationary mobility on
-manually-spawned lights in a fully-dynamic-lighting project → no light rendered at all, (3) the
-landscape material being the unconfigured master template → the plugin's own placeholder texture.
-All three are fixed now; still awaiting the user's next real-rendered confirmation.
+**⚠ STILL OPEN, not fixed — root cause #4, unknown**: with mobility corrected AND the real
+textured material confirmed working in Unlit, **Lit mode is still solid black**. This is the
+actual live blocker, not yet root-caused. Everything gameplay/geometry/collision/material-side is
+now independently confirmed fine — this is isolated specifically to the lighting/post-process
+render pass. Leading theory, not yet checked: `NewMap` may have a `PostProcessVolume` calibrating
+exposure that `Map_Small2v2` never got (the level was built from scratch via script, not copied
+from a known-good template) — was about to inspect `NewMap`'s `PostProcessVolume` settings
+headlessly (same pattern as the lighting-actor inspection above) when this session ended. Secondary
+theory, also unchecked: this project uses Lumen with hardware ray tracing
+(`r.Lumen.HardwareRayTracing=True`) for GI — a runtime-created `Landscape` (via
+`ALandscapeProxy::Import()`, not the normal editor-authored path) might not be registering into
+Lumen's ray-tracing scene correctly, which could zero out lit output while leaving Unlit (which
+bypasses GI entirely) unaffected. **Next session: start here** — check `NewMap` for a
+`PostProcessVolume` and its Exposure settings first (cheapest check), then consider testing with
+`r.DynamicGlobalIlluminationMethod=0` (Lumen off) as a diagnostic if that doesn't explain it.
 
 **Verified 2026-08-25**: `unreal-mcp` was not reachable this session (editor wasn't running yet
 when the session started — matches the documented "connects at session start only" gotcha), so
