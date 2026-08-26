@@ -305,17 +305,98 @@ Instance with its own tuned parameters (not tied to the plugin's own demo map).
 textured material confirmed working in Unlit, **Lit mode is still solid black**. This is the
 actual live blocker, not yet root-caused. Everything gameplay/geometry/collision/material-side is
 now independently confirmed fine — this is isolated specifically to the lighting/post-process
-render pass. Leading theory, not yet checked: `NewMap` may have a `PostProcessVolume` calibrating
-exposure that `Map_Small2v2` never got (the level was built from scratch via script, not copied
-from a known-good template) — was about to inspect `NewMap`'s `PostProcessVolume` settings
-headlessly (same pattern as the lighting-actor inspection above) when this session ended. Secondary
-theory, also unchecked: this project uses Lumen with hardware ray tracing
-(`r.Lumen.HardwareRayTracing=True`) for GI — a runtime-created `Landscape` (via
-`ALandscapeProxy::Import()`, not the normal editor-authored path) might not be registering into
-Lumen's ray-tracing scene correctly, which could zero out lit output while leaving Unlit (which
-bypasses GI entirely) unaffected. **Next session: start here** — check `NewMap` for a
-`PostProcessVolume` and its Exposure settings first (cheapest check), then consider testing with
-`r.DynamicGlobalIlluminationMethod=0` (Lumen off) as a diagnostic if that doesn't explain it.
+render pass.
+
+**2026-08-26 session — two of the leading theories ruled out, one positive signal found, one new
+open question:**
+- **PostProcessVolume theory ruled out.** Headless inspection (`RawAssets/inspect_lighting_v2.py`)
+  of both levels' actors found **neither `NewMap` nor `Map_Small2v2` has a `PostProcessVolume`
+  actor at all** — so its absence can't be what's different between a level that renders fine and
+  one that doesn't. (Both do have Movable Sun/SkyLight/SkyAtmosphere/ExponentialHeightFog with
+  matching values, confirming last session's mobility fix is still correctly in place on both.)
+- **World-Partition-streaming-proxy theory ruled out before it was even tested**: research turned
+  up a real, confirmed Epic forums bug where `ALandscapeProxy::Import()` doesn't create streaming
+  proxies in a **World Partition** level unless you also call
+  `ULandscapeSubsystem::ChangeGridSize()` — but re-reading `RawAssets/create_map_small2v2.py`
+  confirmed `Map_Small2v2` is deliberately built as a **plain, non-World-Partition level**
+  ("doesn't need it" — see that script's own comment), unlike `NewMap`. So this bug doesn't apply
+  here; it was a dead end specific to WP levels. (`NewMap` itself does use WP — headless actor
+  count confirmed a real `Landscape` + ~64 `LandscapeStreamingProxy` actors there, all
+  editor-authored, not runtime-imported — a structurally different landscape-creation path from
+  `Map_Small2v2`'s, which is the one remaining real difference between the two levels' landscapes.)
+- **Positive signal for the Lumen/ray-tracing-registration theory**: ran a real (GPU-backed, not
+  `-nullrhi`) headless PIE session for the first time (`UnrealEditor-Cmd.exe` with
+  `-ExecutePythonScript=RawAssets/test_pie_mapgen.py`, no `-nullrhi`) and captured the actual
+  D3D12/ray-tracing log output. Confirmed: `LogRenderer: Recreating Persistent SBTs ... 
+  NumGeometrySegments changed: current: 0 - new: 512` fires right after PIE reaches
+  `InProgress` — i.e. the runtime-created landscape **does** get picked up and rebuilds the ray
+  tracing acceleration structure with real geometry segments, so it's not being silently skipped
+  by the RT scene at a structural level. Also confirmed generation itself still works cleanly in
+  a real-RHI run: `Greyfield MapGen: generated EGreyfieldMapSize::Small2v2 map, seed=19368,
+  1009x1009 verts, 4 player starts`.
+- **New, unexplained finding — not yet root-caused, may be a red herring**: this same real-RHI
+  headless run auto-issued a `QUIT_EDITOR` console command and fully exited **~350ms after PIE
+  hit `InProgress`**, on its own, with no crash/error/assert logged — `LogStaticMesh: Abandoning
+  remaining async distance field tasks for shutdown` / `...card representation tasks for
+  shutdown` confirm the Lumen card-representation build for the landscape was still async/in-flight
+  at that moment, before the process closed. Cause of the auto-quit itself is unknown — happened
+  with no keypress or script command sent, didn't reproduce when the earlier `-nullrhi` runs were
+  used (those don't tick real rendering, so this may be specific to real-RHI + `-unattended` +
+  `-ExecutePythonScript` together). **Practical effect**: this caps any headless real-RHI diagnostic
+  run to about 1 second of actual rendering — not enough to get past the already-documented normal
+  first-few-seconds shader/DDC-warmup stall, so this session's headless attempt is genuinely
+  inconclusive on whether Lit mode is still black after that stall passes. Didn't chase the
+  auto-quit further; flagging it here in case it recurs or turns out to matter.
+- **Genuine blocker for finishing this headlessly**: `CaptureViewport` doesn't reflect PIE (existing
+  documented limitation) and nullrhi runs render nothing, so there is currently no way for me to
+  visually confirm whether Lit mode is still black past the warmup stall without either (a) the
+  user pressing Play and looking, or (b) screenshotting a live GUI-editor PIE session myself
+  (allowed per [[computer-use-preference]]'s narrower "screenshot to verify, don't click/type"
+  carve-out — not yet tried this session, worth doing next before asking the user).
+- **Fix attempt applied same session, not yet visually confirmed**: since neither map had a
+  `PostProcessVolume` and the project therefore has no per-level exposure override at all,
+  `RawAssets/create_map_small2v2.py` now also spawns one — unbound, auto-exposure method
+  `Histogram`, min brightness 0.03 / max 8.0 / bias 0.0 (wide enough to never itself clip the scene
+  toward black). Script rerun to rebuild the level; headless inspection confirms it saved correctly
+  (`unbound: True`, all three overrides present with those exact values). **Deliberately left
+  `NewMap` untouched** — it already renders correctly with zero `PostProcessVolume`, so this is
+  additive insurance on `Map_Small2v2` only, not a change applied project-wide. This may or may not
+  be the actual root cause (see the ruled-out theories above — it's the one remaining
+  lighting-side difference between the two levels I could find and fix without live rendering), so
+  **still needs a real Play-in-editor check** — genuinely can't go further without eyes on the
+  screen: `CaptureViewport` doesn't reflect PIE, `-nullrhi` renders nothing, and a same-session
+  attempt at a real (GPU-backed) headless PIE run to get render-pass log diagnostics hit a new,
+  unexplained problem (below) that capped it to ~1 second of actual rendering — not enough to get
+  past the already-documented normal first-few-seconds shader/DDC warmup stall.
+- **Positive signal for the Lumen/ray-tracing-registration theory** (from that ~1-second real-RHI
+  run, before the PostProcessVolume fix above was applied): confirmed via log that the runtime-
+  created landscape does get picked up by the ray tracing acceleration structure rebuild right as
+  PIE reaches `InProgress` (`LogRenderer: Recreating Persistent SBTs ... NumGeometrySegments
+  changed: current: 0 - new: 512`) — so it's not being silently skipped by the RT scene at a
+  structural level, at least not immediately. Map generation itself also logged clean in this
+  real-RHI run: `Greyfield MapGen: generated EGreyfieldMapSize::Small2v2 map, seed=19368,
+  1009x1009 verts, 4 player starts`.
+- **New, unexplained finding from that same run — not root-caused, may be a red herring**: the
+  real-RHI headless run (`UnrealEditor-Cmd.exe`, no `-nullrhi`, `-unattended
+  -ExecutePythonScript=RawAssets/test_pie_mapgen.py`) auto-issued a `QUIT_EDITOR` console command
+  and fully exited **~350ms after PIE hit `InProgress`**, on its own — no crash, no error, no
+  assert logged, and nothing sent from my side that would trigger it. `LogStaticMesh: Abandoning
+  remaining async distance field tasks for shutdown` / `...card representation tasks for shutdown`
+  confirm the landscape's Lumen card-representation build was still in-flight (async, normal) at
+  that moment. Didn't reproduce with earlier `-nullrhi` runs (those don't tick real rendering at
+  all, so may be specific to real-RHI + `-unattended` + `-ExecutePythonScript` together — untested
+  whether it's `-unattended` specifically). Not chased further this session; flagging in case it
+  recurs or turns out to matter for future headless real-rendering verification attempts.
+- **Next concrete step, in order**: (1) user presses Play on `Map_Small2v2` in the real editor,
+  waits past the first ~10s warmup stall, and reports whether Lit mode is still black — the
+  PostProcessVolume fix above may have already resolved it. (2) If still black, check the
+  viewport's **Lumen visualization view mode** (View Mode → Lumen → "Surface Cache" or "Final
+  Gather") — this directly shows whether the landscape has a valid Lumen scene representation, a
+  much sharper test than eyeballing Lit vs Unlit, and would confirm or rule out the
+  runtime-Import()-registration theory despite the positive RT-scene signal above (the ray tracing
+  scene and the Lumen surface cache are registered separately, so one being fine doesn't guarantee
+  the other is). (3) `r.DynamicGlobalIlluminationMethod=0` (Lumen off) as a diagnostic if (2) is
+  inconclusive.
 
 **Verified 2026-08-25**: `unreal-mcp` was not reachable this session (editor wasn't running yet
 when the session started — matches the documented "connects at session start only" gotcha), so
