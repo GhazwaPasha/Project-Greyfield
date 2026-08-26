@@ -8,6 +8,9 @@
 #include "GameFramework/PlayerStart.h"
 #include "Engine/World.h"
 #include "Math/RandomStream.h"
+#include "Engine/DirectionalLight.h"
+#include "Components/DirectionalLightComponent.h"
+#include "EngineUtils.h"
 
 namespace GreyfieldMapGen
 {
@@ -224,6 +227,11 @@ ALandscape* UGreyfieldMapGenerationSubsystem::GenerateMap(EGreyfieldMapSize MapS
 	// MountainRangeExample fits this generator's rolling-hills output best of the three; a
 	// dedicated Greyfield-specific instance (own parameter tuning, not tied to a demo map) is
 	// follow-up work, not done here.
+	// 2026-08-26 diagnostic note: temporarily swapped this to a trivial engine material
+	// (/Engine/BasicShapes/BasicShapeMaterial) to bisect the still-open Lit-mode-black bug (root
+	// cause #4, PROJECT_STATUS.md) - it was STILL solid black in Lit mode with that material too,
+	// conclusively ruling out the MW Auto Material as the cause. Reverted back to it here since
+	// the real material isn't the problem either way.
 	static const FSoftObjectPath AutoMaterialPath(TEXT("/Game/MWLandscapeAutoMaterial/Materials/Landscape/MTL_MWAM_Landscape_MountainRangeExample.MTL_MWAM_Landscape_MountainRangeExample"));
 	if (UMaterialInterface* AutoMaterial = Cast<UMaterialInterface>(AutoMaterialPath.TryLoad()))
 	{
@@ -260,6 +268,45 @@ ALandscape* UGreyfieldMapGenerationSubsystem::GenerateMap(EGreyfieldMapSize MapS
 	UE_LOG(LogTemp, Warning, TEXT("Greyfield MapGen: generated %s map, seed=%d, %dx%d verts, %.0fx%.0fm, %d player starts"),
 		*UEnum::GetValueAsString(MapSize), Seed, SizeVerts, SizeVerts,
 		(SizeVerts - 1) * QuadWorldSize / 100.f, (SizeVerts - 1) * QuadWorldSize / 100.f, LastGeneratedSpawns.Num());
+
+	// TEMP diagnostic (2026-08-26, Lit-mode-black investigation) - dump the actual runtime state of
+	// every DirectionalLight in the world and this landscape's actual material/bounds right after
+	// Import(), so we're checking real runtime values instead of assuming edit-time inspection of a
+	// different level matches. Remove once root cause #4 is closed (see PROJECT_STATUS.md).
+	{
+		int32 LightCount = 0;
+		for (TActorIterator<ADirectionalLight> It(World); It; ++It)
+		{
+			++LightCount;
+			ADirectionalLight* Light = *It;
+			UDirectionalLightComponent* LightComp = Cast<UDirectionalLightComponent>(Light->GetLightComponent());
+			UE_LOG(LogTemp, Warning, TEXT("Greyfield MapGen DIAG: DirectionalLight '%s' intensity=%.2f mobility=%d visible=%d affectsWorld=%d castShadows=%d atmosphereSun=%d loc=%s"),
+				*Light->GetName(),
+				LightComp ? LightComp->Intensity : -1.f,
+				LightComp ? (int32)LightComp->Mobility.GetValue() : -1,
+				LightComp ? LightComp->IsVisible() : -1,
+				LightComp ? LightComp->bAffectsWorld : -1,
+				LightComp ? LightComp->CastShadows : -1,
+				LightComp ? LightComp->bAtmosphereSunLight : -1,
+				*Light->GetActorLocation().ToString());
+		}
+		UE_LOG(LogTemp, Warning, TEXT("Greyfield MapGen DIAG: total DirectionalLight actors in world = %d"), LightCount);
+
+		UE_LOG(LogTemp, Warning, TEXT("Greyfield MapGen DIAG: Landscape actor='%s' material='%s' numComponents=%d bounds=%s mobility=%d"),
+			*Landscape->GetName(),
+			Landscape->LandscapeMaterial ? *Landscape->LandscapeMaterial->GetName() : TEXT("NULL"),
+			Landscape->LandscapeComponents.Num(),
+			*Landscape->GetComponentsBoundingBox().ToString(),
+			(int32)Landscape->GetRootComponent()->Mobility.GetValue());
+
+		if (Landscape->LandscapeComponents.Num() > 0 && Landscape->LandscapeComponents[0])
+		{
+			ULandscapeComponent* Comp0 = Landscape->LandscapeComponents[0];
+			UE_LOG(LogTemp, Warning, TEXT("Greyfield MapGen DIAG: Component[0] castShadow=%d visible=%d weightmapLayers=%d lightingChannels(0/1/2)=%d/%d/%d"),
+				Comp0->CastShadow, Comp0->IsVisible(), Comp0->GetWeightmapLayerAllocations().Num(),
+				Comp0->LightingChannels.bChannel0, Comp0->LightingChannels.bChannel1, Comp0->LightingChannels.bChannel2);
+		}
+	}
 
 	return Landscape;
 #endif

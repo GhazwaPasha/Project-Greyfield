@@ -413,15 +413,71 @@ open question:**
   with the actual scene automatically). Rebuilt and headless-verified the script ran clean
   (`save_map returned: True`). **Not yet visually re-confirmed** — needs the same real
   Play-in-editor check as before.
-- **Next concrete step, in order**: (1) user presses Play on `Map_Small2v2` again and reports
-  whether Lit/Lighting-Only are still black — this is the most likely actual fix of the four things
-  tried across this bug (mobility, material, PostProcessVolume, now light intensity). (2) If still
-  black, check the viewport's **Lumen visualization view mode** (View Mode → Lumen → "Surface
-  Cache" or "Final Gather") — this directly shows whether the landscape has a valid Lumen scene
-  representation, and would confirm or rule out the runtime-Import()-registration theory despite
-  the positive RT-scene signal noted above (the ray tracing scene and the Lumen surface cache are
-  registered separately, so one being fine doesn't guarantee the other is). (3)
-  `r.DynamicGlobalIlluminationMethod=0` (Lumen off) as a diagnostic if (2) is inconclusive.
+- **Light-intensity fix confirmed NOT the cause either — user re-tested, still black.** At this
+  point four independent fix attempts (mobility, material instance, PostProcessVolume, light
+  intensity) had all failed to change the symptom at all, which is itself a signal: something this
+  resistant to every lighting-value change is probably not a lighting *value* problem.
+
+- **2026-08-26, same session — full interactive bisection via computer-use (user explicitly
+  authorized), conclusive results.** Opened the real editor, pressed Play on `Map_Small2v2`, and
+  tested each remaining hypothesis directly against the live PIE session rather than continuing to
+  theorize:
+  1. **`r.DynamicGlobalIlluminationMethod 0`** (Lumen GI fully off) — confirmed applied via
+     console (`r.DynamicGlobalIlluminationMethod = "0"` in the log) — **still solid black.** Rules
+     out Lumen/GI registration entirely, including the runtime-Import()-registration theory from
+     earlier in this doc.
+  2. **`showflag.eyeadaptation 0`** (auto-exposure fully off, fixed default exposure instead) —
+     confirmed applied — **still solid black.** Rules out exposure/tonemap as a live-rendering
+     cause (the earlier PostProcessVolume/intensity fixes were already suspect after (4) below, but
+     this closes the door completely).
+  3. **`showflag.dynamicshadows 0`** — confirmed applied — **still solid black.** Rules out a
+     shadow-map/VSM occlusion problem (e.g. the landscape appearing fully self-shadowed).
+  4. **`showflag.postprocessing 0`** (entire post-process chain off, raw scene color only) —
+     confirmed applied — **still solid black.** Proves the black pixels exist in the base pass
+     itself, before any post-process step — not a tonemap/color-grading/bloom artifact.
+  5. **`ToggleDebugCamera`** (free-fly camera fully detached from the RTS pawn) — flew to
+     `Loc=(2105.9, 0.0, 6732.1)` (67m up), confirmed via the debug camera's own HUD that a clean
+     77m ray-trace hit the landscape's real collision (`HitObject: 'Landscape_0'`, valid surface
+     normal `(0.008, -0.078, 0.997)`) — **the view was still solid black from this completely
+     independent, verifiably-not-embedded camera.** This conclusively rules out "camera embedded in
+     terrain" as the cause (a live theory at the time, prompted by the pawn's spawn location
+     `(1105.86, 0, 296.31)` not matching any of the four procedurally-generated, properly-flattened
+     `PlayerStart` locations — `PlayerStart0` was independently confirmed correct at
+     `(~30772, ~5425, 300)` via the Outliner, so the *pawn's own spawn-point selection* not landing
+     on a real `PlayerStart` is a separate, real, still-unexplained bug worth its own investigation
+     later, but it is **not** the cause of the black screen since the untethered debug camera ruled
+     that out too).
+  6. **Material bisection (the decisive test)**: temporarily swapped `GenerateMap()`'s landscape
+     material from `MTL_MWAM_Landscape_MountainRangeExample` to a trivial, guaranteed-working
+     engine material (`/Engine/BasicShapes/BasicShapeMaterial`), rebuilt, and re-tested — **still
+     solid black in Lit mode with the trivial material too** (confirmed via the diagnostic log:
+     `material='BasicShapeMaterial'`). Then switched that same PIE session to **Unlit** — it showed
+     a plain, bright, uniform white/gray screen (not black), consistent with a flat textureless
+     material and confirming the render pipeline works fine end-to-end for Unlit regardless of
+     material. **Reverted the material back to the real MW Auto Material afterward** since it's
+     conclusively not the cause either way.
+
+  **Net conclusion**: every lighting feature (GI, shadows, exposure, post-process), the camera's
+  position, and the material have all been independently ruled out through direct, confirmed
+  testing — not inference. What's left, by elimination, is something about the **Lit shading pass
+  specifically on this runtime-created (`ALandscapeProxy::Import()`-built) Landscape actor**,
+  independent of everything else. This is a genuinely deep, narrow engine-level issue at this
+  point — likely needs a GPU capture (RenderDoc or similar) to actually see what the base pass is
+  doing differently for this primitive, which is beyond what's diagnosable through gameplay-side
+  tools or console commands. **Not chased further this session** — recommend either (a) a future
+  session with GPU-capture tooling, (b) filing/searching Epic's issue tracker for "runtime Landscape
+  Import Lit black UE5.8" now that the symptom is this precisely characterized, or (c) as a
+  pragmatic workaround, pre-authoring the landscape in the editor (like `NewMap`) instead of
+  generating it via `Import()` at runtime, accepting a fixed rather than per-match-random terrain
+  if this can't be resolved.
+
+  **Also worth its own follow-up, separate from this bug**: the RTS camera pawn is not spawning at
+  any of the four procedurally-generated `PlayerStart` actors (see point 5 above) — it lands at a
+  location matching none of the expected spawn-arc coordinates. `GameMode::StartPlay()` now
+  generates the map before calling `Super::StartPlay()` (this session's earlier change, still in
+  place), so the `PlayerStart`s do exist by login time; something else in player-start *selection*
+  isn't picking one of them. Not investigated this session since the debug-camera test already
+  proved it isn't the black-screen cause, but it's a real, separate defect.
 
 **Verified 2026-08-25**: `unreal-mcp` was not reachable this session (editor wasn't running yet
 when the session started — matches the documented "connects at session start only" gotcha), so
