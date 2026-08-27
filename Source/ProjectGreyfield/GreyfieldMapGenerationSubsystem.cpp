@@ -7,6 +7,7 @@
 #include "Materials/MaterialInterface.h"
 #include "GameFramework/PlayerStart.h"
 #include "Engine/World.h"
+#include "Engine/Engine.h"
 #include "Math/RandomStream.h"
 #include "Engine/DirectionalLight.h"
 #include "Components/DirectionalLightComponent.h"
@@ -22,6 +23,23 @@ namespace GreyfieldMapGen
 	// 1 unreal unit = 1cm convention (project default) -> 100uu/quad = 1m/quad.
 	constexpr float LandscapeActorScaleXY = 100.f;
 	constexpr float LandscapeActorScaleZ = 100.f;
+}
+
+ALandscape* UGreyfieldMapGenerationSubsystem::GenerateMapForWorld(UObject* WorldContextObject, EGreyfieldMapSize MapSize, int32 Seed)
+{
+	UWorld* World = GEngine ? GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::LogAndReturnNull) : nullptr;
+	if (!World)
+	{
+		UE_LOG(LogTemp, Error, TEXT("Greyfield MapGen: GenerateMapForWorld - could not resolve a World from the given context object"));
+		return nullptr;
+	}
+	UGreyfieldMapGenerationSubsystem* MapGen = World->GetSubsystem<UGreyfieldMapGenerationSubsystem>();
+	if (!MapGen)
+	{
+		UE_LOG(LogTemp, Error, TEXT("Greyfield MapGen: GenerateMapForWorld - world has no UGreyfieldMapGenerationSubsystem"));
+		return nullptr;
+	}
+	return MapGen->GenerateMap(MapSize, Seed);
 }
 
 FGreyfieldMapSizePreset UGreyfieldMapGenerationSubsystem::GetPresetForSize(EGreyfieldMapSize MapSize)
@@ -269,8 +287,17 @@ ALandscape* UGreyfieldMapGenerationSubsystem::GenerateMap(EGreyfieldMapSize MapS
 	// receive that trigger - leaving the renderer sampling stale/default merged-layer data (a
 	// degenerate/zero normal would explain every symptom seen: Lit and Lighting Only both solid
 	// black regardless of GI/shadows/exposure/post-process/camera position/material, while Unlit -
-	// which doesn't need a normal - works fine). Force that merge to actually run now.
-	Landscape->RequestLayersContentUpdateForceAll();
+	// which doesn't need a normal - works fine).
+	//
+	// RequestLayersContentUpdateForceAll() (tried first) only sets a queued flag consumed by
+	// ULandscapeSubsystem::Tick on a later frame - confirmed by reading its implementation
+	// (LandscapeEditLayers.cpp:6719, just does `LayerContentUpdateModes |= InModeMask`). That's
+	// fine at PIE runtime (the world keeps ticking), but useless for baking a level at edit time in
+	// a single script invocation with no guaranteed later tick. ForceUpdateLayersContent() (used
+	// here instead) is the synchronous sibling actually used internally for exactly this situation -
+	// UpdateLayersContent(bInWaitForStreaming=true, bFlushRender=true) - it merges and flushes
+	// immediately, in this call, no waiting on ticks required.
+	Landscape->ForceUpdateLayersContent();
 
 	for (const FGreyfieldPlayerSpawn& Spawn : LastGeneratedSpawns)
 	{

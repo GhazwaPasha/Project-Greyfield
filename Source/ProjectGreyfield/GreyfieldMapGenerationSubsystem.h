@@ -36,6 +36,13 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Greyfield|MapGen")
 	static FGreyfieldMapSizePreset GetPresetForSize(EGreyfieldMapSize MapSize);
 
+	// 2026-08-27: static wrapper for editor-time baking scripts. Python's UE bindings don't expose
+	// UWorld::GetSubsystem<T>() (confirmed: unreal.World has no subsystem-related methods in this
+	// binding), so a headless bake script has no way to reach this subsystem's instance on the
+	// current editor world otherwise. WorldContextObject lets Python just pass the world directly.
+	UFUNCTION(BlueprintCallable, Category = "Greyfield|MapGen", meta = (WorldContext = "WorldContextObject"))
+	static ALandscape* GenerateMapForWorld(UObject* WorldContextObject, EGreyfieldMapSize MapSize, int32 Seed);
+
 	// Spawn points from the most recent GenerateMap call, for anything that wants to place
 	// starting bases/units without re-deriving the layout.
 	UPROPERTY(BlueprintReadOnly, Category = "Greyfield|MapGen")
