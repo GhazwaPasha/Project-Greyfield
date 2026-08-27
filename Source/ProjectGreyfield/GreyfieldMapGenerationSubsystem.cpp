@@ -257,6 +257,21 @@ ALandscape* UGreyfieldMapGenerationSubsystem::GenerateMap(EGreyfieldMapSize MapS
 
 	Landscape->GetLandscapeInfo(); // registers the LandscapeInfo, matching the editor's own New Landscape flow
 
+	// 2026-08-27, Lit-mode-black investigation (root cause #4, PROJECT_STATUS.md): UE 5.8 made Edit
+	// Layers mandatory for every landscape (confirmed via the "Automatically enabling edit layers"
+	// log line and the engine's own HasLayersContent deprecation warning: "Non-edit layer landscapes
+	// are deprecated, all landscapes use the edit layer system now"). Edit Layers is a separate GPU
+	// merge pass that produces the FINAL heightmap/normal/weightmap textures the renderer actually
+	// samples - Import() writes CPU-side texture data directly (the old pre-Edit-Layers behavior,
+	// kept for backward compatibility) and calls CreateDefaultLayer(), but never explicitly requests
+	// that merge run. In the editor this gets triggered implicitly by normal tool interaction; a
+	// landscape built purely in C++ at runtime, with no editor UI ever touching it, may never
+	// receive that trigger - leaving the renderer sampling stale/default merged-layer data (a
+	// degenerate/zero normal would explain every symptom seen: Lit and Lighting Only both solid
+	// black regardless of GI/shadows/exposure/post-process/camera position/material, while Unlit -
+	// which doesn't need a normal - works fine). Force that merge to actually run now.
+	Landscape->RequestLayersContentUpdateForceAll();
+
 	for (const FGreyfieldPlayerSpawn& Spawn : LastGeneratedSpawns)
 	{
 		if (APlayerStart* Start = World->SpawnActor<APlayerStart>(Spawn.Location + FVector(0.f, 0.f, 300.f), FRotator::ZeroRotator))

@@ -479,6 +479,53 @@ open question:**
   isn't picking one of them. Not investigated this session since the debug-camera test already
   proved it isn't the black-screen cause, but it's a real, separate defect.
 
+- **2026-08-27, same investigation continued — RenderDoc GPU capture attempted, root cause #4 fix
+  applied (Edit Layers merge never requested).** User had RenderDoc running; relaunched the editor
+  with `-AttachRenderDoc` (confirmed in log: `RenderDoc plugin is ready!` — the project's plugin is
+  present but inert unless this flag or `renderdoc.AutoAttach` is set). The in-editor capture
+  hotkey is **Alt+F12** (`Capture Frame`, found via Keyboard Shortcuts settings — plain F12 does
+  nothing), bound in `RenderDoc Plugin` category. Captured a frame during the black PIE session —
+  `RenderDocPlugin: Capture frame and launch renderdoc!` confirmed in log, RenderDoc opened with
+  `...capture.rdc loaded. No problems detected.`
+  - Confirmed real render data exists: `LumenSceneUpdate: 13 card captures 0.030M texels` fired
+    during the captured frame — Lumen Scene is actively producing surface-cache data, not stalled
+    or empty.
+  - Searching the Event Browser for `Landscape` by name only ever matched inside
+    `FXSystemPreRender` (grass/foliage instancing, which does reference the Landscape by name) —
+    confirming that regular BasePass mesh draws in UE aren't named per-actor by default, so
+    text-searching for the terrain's own draw call doesn't work; would need Pixel History on the
+    rendered image instead to find it directly.
+  - **Reproducible, genuine tooling limitation hit twice**: navigating the Event Browser to select
+    any event around EID ~13,500 (inside the `Scene` render group, of 24,384 total events in the
+    frame) triggered a real `DXGI_ERROR_DEVICE_RESET` / "Device Lost" crash in RenderDoc's replay
+    device on this hardware (RTX 4050 laptop GPU) — happened on a large backward jump from the end
+    of the frame, and again after reopening fresh and jumping there directly, ruling out "which
+    direction" as the cause. This is a hardware/driver-timeout wall, not a UI mistake, and further
+    RenderDoc navigation into that exact region isn't practical on this machine as a result. Not
+    pursued further via the GUI; **this is itself circumstantial evidence worth keeping**: whatever
+    the GPU has to do to replay that part of the frame is expensive/unstable enough to trip a TDR
+    reset in a controlled single-frame replay, which fits a scene containing a genuinely unusual
+    per-frame GPU workload (a heavyweight or malformed compute pass) better than it fits a
+    completely ordinary, already-well-behaved landscape.
+  - **Fix applied based on the accumulated evidence, not fully RenderDoc-confirmed**: re-read
+    `Landscape.h` and confirmed UE 5.8 made **Edit Layers mandatory for every landscape** (matches
+    the "Automatically enabling edit layers" log line seen throughout this investigation, and the
+    engine's own deprecation warning on `ALandscapeProxy::HasLayersContent`: *"Non-edit layer
+    landscapes are deprecated, all landscapes use the edit layer system now."*). Edit Layers is a
+    separate GPU merge pass that produces the actual final heightmap/normal/weightmap textures the
+    renderer samples — `Import()` only writes CPU-side texture data directly (old pre-Edit-Layers
+    behavior, kept for backward compatibility) and calls `CreateDefaultLayer()`, but never
+    explicitly requests that merge run. In the editor this gets triggered implicitly by normal tool
+    interaction; a landscape built purely in C++ at runtime, never touched by editor UI, may never
+    receive that trigger — leaving the renderer sampling stale/default merged-layer data. A
+    degenerate/zero normal from that would explain every symptom gathered this whole investigation
+    at once: Lit and Lighting Only both solid black regardless of GI/shadows/exposure/post-process/
+    camera position/material (all independently ruled out), while Unlit — which doesn't need a
+    normal — works fine. Added `Landscape->RequestLayersContentUpdateForceAll()` right after
+    `Import()` in `GenerateMap()` to force that merge to actually run. Rebuilt clean (real `Link`
+    step confirmed). **Not yet visually re-tested** — needs the same Play-in-editor check as every
+    other attempt this investigation.
+
 **Verified 2026-08-25**: `unreal-mcp` was not reachable this session (editor wasn't running yet
 when the session started — matches the documented "connects at session start only" gotcha), so
 verification went through the same headless-Python pattern as asset import, extended one step
