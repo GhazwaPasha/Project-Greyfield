@@ -592,6 +592,31 @@ errors):
   existing Actor-side GAS simplification rather than introducing a second damage model.
   Compiled clean, editor re-verified booting healthy (0 map-check errors) after this landed.
 
+**2026-08-29 — actual squad movement/positions in PIE now proven, closing the gap below.**
+`UGreyfieldSquadFormationProcessor` now carries a proof-of-movement debug log (dev-visibility
+only, `LogGreyfieldSquadFormation`): the first `LogTicksRemaining` (15) ticks after any squad
+first appears log one tracked leader's and one follower's resolved world position, then logging
+stops for the rest of the session. Verified via a real headless PIE run against `NewMap`
+(`RawAssets/test_mass_squad_movement.py`, spawns a `GreyfieldMassSquadTestTrigger` and requests
+begin-play): captured 15 real ticks showing the leader's X climbing monotonically
+(0.000 → 34.255 over ~0.5s of sim time, moving toward its destination) while the follower held
+a constant, exactly-correct formation offset (`dist-to-leader` locked at 168, matching the
+computed offset math by hand) — real movement, not a static snapshot.
+
+**Real headless-PIE-testing blocker found and fixed along the way**, worth keeping for any
+future headless verification: `-ExecutePythonScript` runs were only ever getting ~1 real PIE
+tick before the process force-quit, no matter what the in-processor logging budget was (traced
+to `EditorPythonExecuter.cpp`: `UEditorPythonScriptingLibrary::GetKeepPythonScriptAlive()`
+defaults false, which force-quits the editor one tick after any `-ExecutePythonScript` run
+finishes — nothing to do with nullrhi/real-RHI or `-unattended`, contrary to earlier sessions'
+theories in this doc). Fix: call `unreal.EditorPythonScripting.set_keep_python_script_alive(True)`
+before the script returns (Python class name is `EditorPythonScripting`, not
+`EditorPythonScriptingLibrary` — the C++ class has `meta=(ScriptName="EditorPythonScripting")`) —
+the process then stays alive ticking real PIE until explicitly killed (`Stop-Process`) from the
+launcher side once enough log data has been captured. This unblocks headless multi-tick PIE
+verification generally, not just this test — use it instead of accepting a single-tick snapshot
+next time.
+
 **`unreal-mcp` reconnected 2026-08-24 — content authoring + first real PIE proof landed:**
 - Two `UMassEntityConfigAsset`s built via the reconnected toolset:
   `/Game/Data/Mass/MEC_GreyfieldUnit_Leader` (Movement/Steering/Avoidance/NavMesh-Navigation/
@@ -609,11 +634,10 @@ errors):
   wrong LOD-collector trait (`MassLODCollectorTrait`'s processor doesn't auto-register;
   swapped to `MassDistanceLODCollectorTrait`, which does), and the test actor itself having
   no root component (`GetActorLocation()` silently returned zero).
-- **Not yet proven**: actual squad movement/positions in PIE. `CaptureViewport` reflects the
-  editor's own level viewport, not the live PIE world — Mass entities that only exist in the
-  running simulation don't show up in it (same limitation already noted below, not a new
-  bug). A timed debug log of leader/follower positions inside the processors would close
-  this out cleanly; not done yet.
+- **Proven 2026-08-29** (was: not yet proven): actual squad movement/positions in PIE.
+  `CaptureViewport` still doesn't reflect the live PIE world (same limitation, unchanged), but a
+  debug log inside the processor now closes this out directly — see the 2026-08-29 entry above
+  for the full verification.
 - Squad leader death/succession and formation types are still just noted gaps (see above),
   unchanged by this pass.
 - The *existing* selection/order UI still targets `AGreyfieldUnit` actors only — nothing

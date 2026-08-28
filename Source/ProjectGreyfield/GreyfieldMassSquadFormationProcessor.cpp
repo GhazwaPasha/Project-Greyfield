@@ -6,6 +6,8 @@
 #include "MassNavigationFragments.h"
 #include "MassExecutionContext.h"
 
+DEFINE_LOG_CATEGORY_STATIC(LogGreyfieldSquadFormation, Log, All);
+
 UGreyfieldSquadFormationProcessor::UGreyfieldSquadFormationProcessor()
 	: EntityQuery(*this)
 {
@@ -61,10 +63,29 @@ void UGreyfieldSquadFormationProcessor::Execute(FMassEntityManager& EntityManage
 		return;
 	}
 
+	// Proof-of-movement logging: pick one leader to track and, in pass 2 below, one of its
+	// followers, then log both positions for the next LogTicksRemaining ticks. This is the only
+	// way to confirm Mass squads are actually moving in a live PIE session - CaptureViewport
+	// doesn't render entities that only exist in the running simulation.
+	const bool bShouldLogThisTick = LogTicksRemaining > 0;
+	FMassEntityHandle TrackedLeaderHandle;
+	const FLeaderInfo* TrackedLeaderInfo = nullptr;
+	if (bShouldLogThisTick)
+	{
+		for (const TPair<FMassEntityHandle, FLeaderInfo>& Pair : LeaderInfoByHandle)
+		{
+			TrackedLeaderHandle = Pair.Key;
+			TrackedLeaderInfo = &Pair.Value;
+			break;
+		}
+	}
+	FVector LoggedFollowerPos = FVector::ZeroVector;
+	bool bFoundLoggedFollower = false;
+
 	// Pass 2: followers trail their leader's resolved position, offset by their formation slot.
 	// Local avoidance (stock Mass Avoidance trait) handles not clumping/colliding along the way -
 	// this processor only decides *where* each follower is currently trying to go.
-	EntityQuery.ForEachEntityChunk(Context, [&LeaderInfoByHandle](FMassExecutionContext& ChunkContext)
+	EntityQuery.ForEachEntityChunk(Context, [&LeaderInfoByHandle, TrackedLeaderHandle, bShouldLogThisTick, &LoggedFollowerPos, &bFoundLoggedFollower](FMassExecutionContext& ChunkContext)
 	{
 		const TConstArrayView<FGreyfieldSquadFragment> Squads = ChunkContext.GetFragmentView<FGreyfieldSquadFragment>();
 		const TArrayView<FMassMoveTargetFragment> MoveTargets = ChunkContext.GetMutableFragmentView<FMassMoveTargetFragment>();
@@ -88,6 +109,34 @@ void UGreyfieldSquadFormationProcessor::Execute(FMassEntityManager& EntityManage
 			MoveTargets[Index].Center = LeaderInfo->Position + RotatedOffset;
 			MoveTargets[Index].Forward = LeaderInfo->FacingQuat.GetForwardVector();
 			MoveTargets[Index].DesiredSpeed = FMassInt16Real(LeaderInfo->DesiredSpeed);
+
+			if (bShouldLogThisTick && !bFoundLoggedFollower && Squads[Index].LeaderEntity == TrackedLeaderHandle)
+			{
+				LoggedFollowerPos = MoveTargets[Index].Center;
+				bFoundLoggedFollower = true;
+			}
 		}
 	});
+
+	if (TrackedLeaderInfo)
+	{
+		--LogTicksRemaining;
+		if (bFoundLoggedFollower)
+		{
+			UE_LOG(LogGreyfieldSquadFormation, Log,
+				TEXT("Squad move proof [dt=%.3f]: leader %s at %s (speed %.0f), follower at %s (dist-to-leader %.0f)"),
+				Context.GetDeltaTimeSeconds(), *TrackedLeaderHandle.DebugGetDescription(),
+				*TrackedLeaderInfo->Position.ToString(), TrackedLeaderInfo->DesiredSpeed,
+				*LoggedFollowerPos.ToString(), FVector::Dist(TrackedLeaderInfo->Position, LoggedFollowerPos));
+		}
+		else
+		{
+			// Solo leader (squad of one) or followers not yet ticked this frame - still useful to
+			// confirm the leader itself is actually resolving new positions over time.
+			UE_LOG(LogGreyfieldSquadFormation, Log,
+				TEXT("Squad move proof [dt=%.3f]: leader %s at %s (speed %.0f), no follower found this tick"),
+				Context.GetDeltaTimeSeconds(), *TrackedLeaderHandle.DebugGetDescription(),
+				*TrackedLeaderInfo->Position.ToString(), TrackedLeaderInfo->DesiredSpeed);
+		}
+	}
 }

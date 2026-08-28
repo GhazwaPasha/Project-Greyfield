@@ -25,4 +25,13 @@ protected:
 	virtual void Execute(FMassEntityManager& EntityManager, FMassExecutionContext& Context) override;
 
 	FMassEntityQuery EntityQuery;
+
+	// Proof-of-movement logging (Phase 2 PIE verification, 2026-08-29) - logs one leader's and one
+	// of its followers' resolved world positions every tick for the first LogTickBudget ticks after
+	// a squad first appears, then stops (cheap dev-visibility, not a permanent per-frame cost).
+	// Every-tick rather than throttled-by-seconds deliberately: headless verification runs via
+	// -ExecutePythonScript get auto-killed (QUIT_EDITOR) well under 1 real second after PIE starts
+	// (documented, unexplained engine behavior - see PROJECT_STATUS.md), so a handful of dense
+	// early samples is the only way to actually see a position trend in that window.
+	int32 LogTicksRemaining = 15;
 };
