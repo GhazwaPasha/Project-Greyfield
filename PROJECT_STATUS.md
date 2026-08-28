@@ -592,6 +592,62 @@ errors):
   existing Actor-side GAS simplification rather than introducing a second damage model.
   Compiled clean, editor re-verified booting healthy (0 map-check errors) after this landed.
 
+**2026-08-29, same session — player selection/order UI wired to Mass squads (code-complete,
+runtime spawn NOT yet visually confirmed - see below for why).** User chose "build the full LOD
+hybrid now" over the smaller AI-armies-only option. Built:
+- `IGreyfieldCommandableUnitInterface` (new, `GreyfieldCommandableUnitInterface.h`) - `GetGreyfieldTeam`/
+  `IssueMoveOrder`/`IssueAttackOrder`, implemented by both `AGreyfieldUnit` (thin wrapper around its
+  existing methods) and the new `AGreyfieldMassUnitVisual`. Kept separate from
+  `IGreyfieldSelectableInterface` since buildings are selectable but not orderable.
+- `EGreyfieldTeam` split out of `GreyfieldUnit.h` into its own `GreyfieldTeam.h` (2026-08-29) to
+  break an include cycle between `GreyfieldUnit.h` and the new interface header;
+  `GreyfieldMassFragments.h` switched to the lighter include too.
+- `AGreyfieldMassUnitVisual` (new) - the Mass representation system's "High LOD" (near/selected)
+  visual+click-target proxy actor. Deliberately NOT `AGreyfieldUnit`: no GAS/ASC, no AIController -
+  just a mesh + collision + `IGreyfieldSelectableInterface`/`IGreyfieldCommandableUnitInterface`.
+  Resolves its own entity handle via `UMassActorSubsystem::GetEntityHandleFromActor(this)` (the
+  actor-to-entity reverse lookup Mass's own representation system registers automatically when it
+  spawns/attaches an actor - no custom binding code needed).
+- `GreyfieldPlayerController` updated at all 4 touch points that previously hardcoded
+  `AGreyfieldUnit`: box-select (now iterates by `IGreyfieldCommandableUnitInterface`, which
+  naturally excludes buildings without extra filtering), click-select target/attacker resolution,
+  `FormationMoveOrder` (Mass-backed selections get batched into one real
+  `UGreyfieldMassSubsystem::FormSquad`+`IssueSquadMoveOrder` call instead of N independent
+  squads-of-one), and the right-click attack dispatch. Fog-of-war (`UpdateFogOfWar`) deliberately
+  **not** touched this pass - still `AGreyfieldUnit`-only, matches the existing documented
+  per-actor-not-per-grid-cell gap, out of scope for "wire selection/orders."
+- Both `MEC_GreyfieldUnit_Leader`/`_Follower`'s existing `MassMovableVisualizationTrait` had
+  `HighResTemplateActor` set to `AGreyfieldMassUnitVisual` (was `None` - so entities promoted to
+  Mass's own "High" representation LOD literally never spawned any actor before this, on either
+  config, since project inception). Done headlessly (`RawAssets/wire_mass_unit_visual.py`) since
+  `unreal-mcp` wasn't reachable this session (editor wasn't running at session start).
+- No dedicated Mass "attack-move to target" order exists yet (known gap, same as the
+  interface/header comments say) - `IssueAttackOrder` on a Mass unit just move-orders to the
+  target's current location, relying on `GreyfieldMassCombatProcessor`'s existing passive
+  auto-engage-in-range behavior to actually start the fight once close enough.
+
+**Why runtime actor-spawning isn't confirmed yet, and why headless testing couldn't settle it**:
+tried extensively (near spawn point vs. far, `-nullrhi` vs. real-RHI, up to 130+ real seconds of
+process lifetime using the `set_keep_python_script_alive` fix above) - `AGreyfieldMassUnitVisual`
+never spawned in any headless run. Added a temporary diagnostic (`FMassRepresentationLODFragment`/
+`FMassActorFragment` read into the existing squad-move-proof log) and got a real, conclusive
+answer: `FMassRepresentationLODFragment.LOD` stayed at `EMassLOD::Max` (the fragment's
+never-written sentinel default) for the entire run, every time - not "Off" or "Low", genuinely
+never computed at all. This means `UMassVisualizationLODProcessor` itself never ran for these
+entities in headless `-unattended` mode, regardless of RHI or distance - strong circumstantial
+evidence that Mass's LOD/representation system depends on a real local-player game viewport
+(`UGameViewportClient`) existing to register a "viewer" in the first place, which headless
+commandlet-style PIE apparently never creates even with real rendering. **This is an environment
+limitation of headless verification, not a sign the feature is broken** - the code path
+(`BuildTemplate` registering `HighResTemplateActor` into `RepresentationFragment`, the
+LODRepresentation array already defaulting to `HighResSpawnedActor` for the top tier, the
+actor-to-entity reverse lookup) was read directly in engine source and looks correct.
+**Concrete next step, needs a real windowed session**: open the editor for real, press Play on
+`NewMap` with the camera near a spawned/test-triggered squad, and check whether an
+`AGreyfieldMassUnitVisual` actor appears and is click-selectable/orderable. Either the user does
+this directly, or a future session does it via `unreal-mcp` (once reachable) or computer-use (per
+[[computer-use-preference]] - not used this session per explicit instruction).
+
 **2026-08-29 — actual squad movement/positions in PIE now proven, closing the gap below.**
 `UGreyfieldSquadFormationProcessor` now carries a proof-of-movement debug log (dev-visibility
 only, `LogGreyfieldSquadFormation`): the first `LogTicksRemaining` (15) ticks after any squad

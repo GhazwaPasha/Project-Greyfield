@@ -13,7 +13,7 @@
 #include "CoreMinimal.h"
 #include "MassEntityTypes.h"
 #include "Mass/EntityHandle.h" // FMassEntityHandle - moved here from MassEntity in UE 5.8, lives in the MassCore module
-#include "GreyfieldUnit.h" // EGreyfieldTeam
+#include "GreyfieldTeam.h"
 #include "GreyfieldMassFragments.generated.h"
 
 // Per-entity mutable combat/identity state. Every Mass-simulated Greyfield unit carries exactly one.

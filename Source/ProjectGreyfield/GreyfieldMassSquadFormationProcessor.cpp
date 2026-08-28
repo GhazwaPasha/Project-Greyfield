@@ -5,6 +5,8 @@
 #include "MassCommonFragments.h"
 #include "MassNavigationFragments.h"
 #include "MassExecutionContext.h"
+#include "MassRepresentationFragments.h"
+#include "MassActorSubsystem.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogGreyfieldSquadFormation, Log, All);
 
@@ -21,6 +23,12 @@ void UGreyfieldSquadFormationProcessor::ConfigureQueries(const TSharedRef<FMassE
 	EntityQuery.AddRequirement<FGreyfieldSquadFragment>(EMassFragmentAccess::ReadOnly);
 	EntityQuery.AddRequirement<FTransformFragment>(EMassFragmentAccess::ReadOnly);
 	EntityQuery.AddRequirement<FMassMoveTargetFragment>(EMassFragmentAccess::ReadWrite);
+	// Optional - only present on configs with a Mass Movable/Stationary Visualization trait and
+	// MassAssortedFragmentsTrait's Actor fragment respectively. Read here purely for the
+	// representation-LOD diagnostic log below (2026-08-29, Phase 2 player-integration
+	// verification) - not used by the actual formation logic.
+	EntityQuery.AddRequirement<FMassRepresentationLODFragment>(EMassFragmentAccess::ReadOnly, EMassFragmentPresence::Optional);
+	EntityQuery.AddRequirement<FMassActorFragment>(EMassFragmentAccess::ReadOnly, EMassFragmentPresence::Optional);
 	EntityQuery.RegisterWithProcessor(*this);
 }
 
@@ -34,6 +42,8 @@ void UGreyfieldSquadFormationProcessor::Execute(FMassEntityManager& EntityManage
 		FVector Position = FVector::ZeroVector;
 		FQuat FacingQuat = FQuat::Identity;
 		float DesiredSpeed = 0.f;
+		EMassLOD::Type RepresentationLOD = EMassLOD::Max;
+		bool bHasActor = false;
 	};
 	TMap<FMassEntityHandle, FLeaderInfo> LeaderInfoByHandle;
 
@@ -42,6 +52,8 @@ void UGreyfieldSquadFormationProcessor::Execute(FMassEntityManager& EntityManage
 		const TConstArrayView<FGreyfieldSquadFragment> Squads = ChunkContext.GetFragmentView<FGreyfieldSquadFragment>();
 		const TConstArrayView<FTransformFragment> Transforms = ChunkContext.GetFragmentView<FTransformFragment>();
 		const TConstArrayView<FMassMoveTargetFragment> MoveTargets = ChunkContext.GetFragmentView<FMassMoveTargetFragment>();
+		const TConstArrayView<FMassRepresentationLODFragment> RepLODs = ChunkContext.GetFragmentView<FMassRepresentationLODFragment>();
+		const TConstArrayView<FMassActorFragment> ActorFrags = ChunkContext.GetFragmentView<FMassActorFragment>();
 
 		for (int32 Index = 0; Index < ChunkContext.GetNumEntities(); ++Index)
 		{
@@ -53,6 +65,14 @@ void UGreyfieldSquadFormationProcessor::Execute(FMassEntityManager& EntityManage
 					? Transforms[Index].GetTransform().GetRotation()
 					: MoveTargets[Index].Forward.ToOrientationQuat();
 				Info.DesiredSpeed = MoveTargets[Index].DesiredSpeed.Get();
+				if (RepLODs.Num() == ChunkContext.GetNumEntities())
+				{
+					Info.RepresentationLOD = RepLODs[Index].LOD;
+				}
+				if (ActorFrags.Num() == ChunkContext.GetNumEntities())
+				{
+					Info.bHasActor = ActorFrags[Index].Get() != nullptr;
+				}
 				LeaderInfoByHandle.Add(ChunkContext.GetEntity(Index), Info);
 			}
 		}
@@ -121,12 +141,13 @@ void UGreyfieldSquadFormationProcessor::Execute(FMassEntityManager& EntityManage
 	if (TrackedLeaderInfo)
 	{
 		--LogTicksRemaining;
+		const FString LODName = UEnum::GetDisplayValueAsText(TrackedLeaderInfo->RepresentationLOD).ToString();
 		if (bFoundLoggedFollower)
 		{
 			UE_LOG(LogGreyfieldSquadFormation, Log,
-				TEXT("Squad move proof [dt=%.3f]: leader %s at %s (speed %.0f), follower at %s (dist-to-leader %.0f)"),
+				TEXT("Squad move proof [dt=%.3f]: leader %s at %s (speed %.0f, repLOD=%s, hasActor=%d), follower at %s (dist-to-leader %.0f)"),
 				Context.GetDeltaTimeSeconds(), *TrackedLeaderHandle.DebugGetDescription(),
-				*TrackedLeaderInfo->Position.ToString(), TrackedLeaderInfo->DesiredSpeed,
+				*TrackedLeaderInfo->Position.ToString(), TrackedLeaderInfo->DesiredSpeed, *LODName, TrackedLeaderInfo->bHasActor,
 				*LoggedFollowerPos.ToString(), FVector::Dist(TrackedLeaderInfo->Position, LoggedFollowerPos));
 		}
 		else
@@ -134,9 +155,9 @@ void UGreyfieldSquadFormationProcessor::Execute(FMassEntityManager& EntityManage
 			// Solo leader (squad of one) or followers not yet ticked this frame - still useful to
 			// confirm the leader itself is actually resolving new positions over time.
 			UE_LOG(LogGreyfieldSquadFormation, Log,
-				TEXT("Squad move proof [dt=%.3f]: leader %s at %s (speed %.0f), no follower found this tick"),
+				TEXT("Squad move proof [dt=%.3f]: leader %s at %s (speed %.0f, repLOD=%s, hasActor=%d), no follower found this tick"),
 				Context.GetDeltaTimeSeconds(), *TrackedLeaderHandle.DebugGetDescription(),
-				*TrackedLeaderInfo->Position.ToString(), TrackedLeaderInfo->DesiredSpeed);
+				*TrackedLeaderInfo->Position.ToString(), TrackedLeaderInfo->DesiredSpeed, *LODName, TrackedLeaderInfo->bHasActor);
 		}
 	}
 }

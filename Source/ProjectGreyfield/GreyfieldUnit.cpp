@@ -76,6 +76,21 @@ bool AGreyfieldUnit::IsSelected_Implementation() const
 	return bIsSelected;
 }
 
+EGreyfieldTeam AGreyfieldUnit::GetGreyfieldTeam_Implementation() const
+{
+	return Team;
+}
+
+void AGreyfieldUnit::IssueMoveOrder_Implementation(const FVector& Destination)
+{
+	MoveToLocation(Destination);
+}
+
+void AGreyfieldUnit::IssueAttackOrder_Implementation(AActor* Target)
+{
+	AttackMoveToTarget(Cast<AGreyfieldUnit>(Target));
+}
+
 void AGreyfieldUnit::MoveToLocation(const FVector& Destination)
 {
 	AttackTarget = nullptr;

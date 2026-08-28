@@ -7,6 +7,9 @@
 #include "GreyfieldBuilding.h"
 #include "GreyfieldPlayerState.h"
 #include "GreyfieldSelectableInterface.h"
+#include "GreyfieldCommandableUnitInterface.h"
+#include "GreyfieldMassUnitVisual.h"
+#include "GreyfieldMassSubsystem.h"
 #include "Components/InputComponent.h"
 #include "Kismet/GameplayStatics.h"
 #include "EngineUtils.h"
@@ -187,15 +190,24 @@ void AGreyfieldPlayerController::OnLeftMouseUp()
 		const float MaxX = FMath::Max(DragStartScreenPos.X, CurrentDragScreenPos.X);
 		const float MaxY = FMath::Max(DragStartScreenPos.Y, CurrentDragScreenPos.Y);
 
-		for (TActorIterator<AGreyfieldUnit> It(GetWorld()); It; ++It)
+		// Iterate by IGreyfieldCommandableUnitInterface rather than a concrete class - covers
+		// both Actor-based AGreyfieldUnit and Mass-Entity-backed AGreyfieldMassUnitVisual (only
+		// spawned for near/selected entities, per the representation LOD system) without
+		// box-select accidentally sweeping up non-unit selectables like AGreyfieldBuilding,
+		// which implements IGreyfieldSelectableInterface but not this interface.
+		for (TActorIterator<AActor> It(GetWorld()); It; ++It)
 		{
-			AGreyfieldUnit* Unit = *It;
+			AActor* Actor = *It;
+			if (!Actor->Implements<UGreyfieldCommandableUnitInterface>())
+			{
+				continue;
+			}
 			FVector2D ScreenPos;
-			if (UGameplayStatics::ProjectWorldToScreen(this, Unit->GetActorLocation(), ScreenPos))
+			if (UGameplayStatics::ProjectWorldToScreen(this, Actor->GetActorLocation(), ScreenPos))
 			{
 				if (ScreenPos.X >= MinX && ScreenPos.X <= MaxX && ScreenPos.Y >= MinY && ScreenPos.Y <= MaxY)
 				{
-					NewSelection.Add(Unit);
+					NewSelection.Add(Actor);
 				}
 			}
 		}
@@ -248,15 +260,17 @@ void AGreyfieldPlayerController::OnRightMouseDown()
 		}
 	}
 
-	if (AGreyfieldUnit* TargetUnit = Cast<AGreyfieldUnit>(Hit.GetActor()))
+	if (AActor* TargetActor = Hit.GetActor(); TargetActor && TargetActor->Implements<UGreyfieldCommandableUnitInterface>())
 	{
+		const EGreyfieldTeam TargetTeam = IGreyfieldCommandableUnitInterface::Execute_GetGreyfieldTeam(TargetActor);
 		bool bAnyAttacker = false;
 		for (const TWeakObjectPtr<AActor>& Weak : SelectedUnits)
 		{
-			AGreyfieldUnit* Attacker = Cast<AGreyfieldUnit>(Weak.Get());
-			if (Attacker && Attacker->Team != TargetUnit->Team)
+			AActor* Attacker = Weak.Get();
+			if (Attacker && Attacker->Implements<UGreyfieldCommandableUnitInterface>()
+				&& IGreyfieldCommandableUnitInterface::Execute_GetGreyfieldTeam(Attacker) != TargetTeam)
 			{
-				Attacker->AttackMoveToTarget(TargetUnit);
+				IGreyfieldCommandableUnitInterface::Execute_IssueAttackOrder(Attacker, TargetActor);
 				bAnyAttacker = true;
 			}
 		}
@@ -403,6 +417,31 @@ void AGreyfieldPlayerController::FormationMoveOrder(const FVector& Destination)
 	if (NumUnits == 0)
 	{
 		return;
+	}
+
+	// Mass-Entity-backed selections are batched into one real squad command (UGreyfieldMassSubsystem
+	// computes its own formation offsets around a leader) rather than routed through the per-actor
+	// grid-offset loop below, which would make each one an independent squad-of-one and lose the
+	// formation entirely. Actor-based AGreyfieldUnit selections keep the existing per-actor scheme.
+	TArray<FMassEntityHandle> MassHandles;
+	for (const TWeakObjectPtr<AActor>& Weak : SelectedUnits)
+	{
+		if (AGreyfieldMassUnitVisual* MassUnit = Cast<AGreyfieldMassUnitVisual>(Weak.Get()))
+		{
+			const FMassEntityHandle Handle = MassUnit->GetEntityHandle();
+			if (Handle.IsValid())
+			{
+				MassHandles.Add(Handle);
+			}
+		}
+	}
+	if (MassHandles.Num() > 0)
+	{
+		if (UGreyfieldMassSubsystem* MassSubsystem = GetWorld() ? GetWorld()->GetSubsystem<UGreyfieldMassSubsystem>() : nullptr)
+		{
+			MassSubsystem->FormSquad(MassHandles);
+			MassSubsystem->IssueSquadMoveOrder(MassHandles, Destination);
+		}
 	}
 
 	const int32 UnitsPerRow = FMath::Max(1, FMath::CeilToInt(FMath::Sqrt(static_cast<float>(NumUnits))));

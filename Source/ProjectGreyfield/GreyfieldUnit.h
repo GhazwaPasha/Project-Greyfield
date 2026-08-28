@@ -10,20 +10,15 @@
 #include "GameFramework/Character.h"
 #include "AbilitySystemInterface.h"
 #include "GreyfieldSelectableInterface.h"
+#include "GreyfieldCommandableUnitInterface.h"
+#include "GreyfieldTeam.h"
 #include "GreyfieldUnit.generated.h"
 
 class UAbilitySystemComponent;
 class UGreyfieldAttributeSet;
 
-UENUM(BlueprintType)
-enum class EGreyfieldTeam : uint8
-{
-	Player,
-	Enemy
-};
-
 UCLASS()
-class PROJECTGREYFIELD_API AGreyfieldUnit : public ACharacter, public IGreyfieldSelectableInterface, public IAbilitySystemInterface
+class PROJECTGREYFIELD_API AGreyfieldUnit : public ACharacter, public IGreyfieldSelectableInterface, public IGreyfieldCommandableUnitInterface, public IAbilitySystemInterface
 {
 	GENERATED_BODY()
 
@@ -34,6 +29,11 @@ public:
 
 	virtual void SetSelected_Implementation(bool bSelected);
 	virtual bool IsSelected_Implementation() const;
+
+	// IGreyfieldCommandableUnitInterface
+	virtual EGreyfieldTeam GetGreyfieldTeam_Implementation() const;
+	virtual void IssueMoveOrder_Implementation(const FVector& Destination);
+	virtual void IssueAttackOrder_Implementation(AActor* Target);
 
 	virtual UAbilitySystemComponent* GetAbilitySystemComponent() const override;
 
